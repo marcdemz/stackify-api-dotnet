@@ -1,6 +1,5 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Text;
+using System.Security.Cryptography;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using StackifyLib.Utils;
@@ -9,7 +8,13 @@ namespace StackifyLib.Web
 {
     public static class RealUserMonitoring
     {
-        public static string GetHeaderScript()
+        private static readonly RandomNumberGenerator Rng = new RNGCryptoServiceProvider();
+        
+        /// <summary>
+        /// Generate the header script for including RUM
+        /// </summary>
+        /// <param name="nonce">nonce value, defaults to a cryptographic unique string if left null</param>
+        public static string GetHeaderScript(string nonce = null)
         {
             var rumScriptUrl = Config.RumScriptUrl;
             var rumKey = Config.RumKey;
@@ -51,8 +56,16 @@ namespace StackifyLib.Web
                 settings["Trans"] = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(reportingUrl));
             }
 
-            return string.Format(@"<script type=""text/javascript"">(window.StackifySettings || (window.StackifySettings = {0}))</script><script src=""{1}"" data-key=""{2}"" async></script>",
-                settings.ToString(Formatting.None), rumScriptUrl, rumKey);
+            return string.Format("<script type=\"text/javascript\" nonce=\"{3}\">(window.StackifySettings || (window.StackifySettings = {0}))</script><script src=\"{1}\" data-key=\"{2}\" async></script>",
+                settings.ToString(Formatting.None), rumScriptUrl, rumKey, nonce ?? GetNonce());
+        }
+
+        // generate nonce for strict CSP rules
+        private static string GetNonce()
+        {
+            var nonceBytes = new byte[20];
+            Rng.GetNonZeroBytes(nonceBytes);
+            return Convert.ToBase64String(nonceBytes);
         }
     }
 }

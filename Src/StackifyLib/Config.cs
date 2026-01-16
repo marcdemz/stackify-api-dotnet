@@ -38,8 +38,21 @@ namespace StackifyLib
             try
             {
                 if (IsStackifyJsonLoaded == false) {
+                    StackifyAPILogger.Log($"#Config - LoadSettings - Stackify JSON - Read");
                     ReadStackifyJSONConfig(); // TODO: Better way?
                 }
+
+                if (IsStackifyJsonLoaded == true)
+                {
+                    StackifyAPILogger.Log($"#Config - LoadSettings - Stackify JSON Loaded");
+                }
+
+#if NETCORE || NETCOREX
+                if (_configuration != null)
+                {
+                    StackifyAPILogger.Log($"#Config - LoadSettings - Configuration Set");
+                }
+#endif
 
                 CaptureServerVariables = Get("Stackify.CaptureServerVariables", bool.FalseString).Equals(bool.TrueString, StringComparison.CurrentCultureIgnoreCase);
 
@@ -49,11 +62,26 @@ namespace StackifyLib
 
                 CaptureErrorCookies = Get("Stackify.CaptureErrorCookies", bool.FalseString).Equals(bool.TrueString, StringComparison.CurrentCultureIgnoreCase);
 
+                CaptureErrorUserName = Get("Stackify.CaptureErrorUserName", bool.TrueString).Equals(bool.TrueString, StringComparison.CurrentCultureIgnoreCase);
+
+                CaptureErrorPostdata = Get("Stackify.CaptureErrorPostdata", bool.FalseString).Equals(bool.TrueString, StringComparison.CurrentCultureIgnoreCase);
+
+                EnableCleanName = Get("Stackify.EnableCleanName", bool.FalseString).Equals(bool.TrueString, StringComparison.CurrentCultureIgnoreCase);
+
                 ApiKey = Get("Stackify.ApiKey", ApiKey ?? string.Empty);
 
-                AppName = Get("Stackify.AppName", AppName ?? string.Empty);
+                if (Config.EnableCleanName)
+                {
+                    AppName = Get("Stackify.AppName", AppName ?? string.Empty).GetCleanName();
 
-                Environment = Get("Stackify.Environment", Environment ?? string.Empty);
+                    Environment = Get("Stackify.Environment", Environment ?? string.Empty).GetCleanName();
+                } else
+                {
+                    AppName = Get("Stackify.AppName", AppName ?? string.Empty);
+
+                    Environment = Get("Stackify.Environment", Environment ?? string.Empty);
+                }
+               
 
                 CaptureErrorHeadersWhitelist = Get("Stackify.CaptureErrorHeadersWhitelist", string.Empty);
 
@@ -134,14 +162,30 @@ namespace StackifyLib
                 }
 
                 var rumKey = Get("Stackify.Rum_Key");
-                if (Regex.IsMatch(rumKey, "^[A-Za-z0-9_-]+$"))
+                if (string.IsNullOrWhiteSpace(rumKey) == false && Regex.IsMatch(rumKey, "^[A-Za-z0-9_-]+$"))
                 {
                     RumKey = rumKey;
+                }
+
+                ProxyServer = Get("Stackify.ProxyServer", string.Empty);
+                var proxyUseDefaultCredentials = Get("Stackify.ProxyUseDefaultCredentials", string.Empty);
+                if (string.IsNullOrWhiteSpace(proxyUseDefaultCredentials) == false)
+                {
+                    ProxyUseDefaultCredentials = proxyUseDefaultCredentials.Equals(bool.TrueString, StringComparison.CurrentCultureIgnoreCase);
                 }
             }
             catch (Exception ex)
             {
                 StackifyAPILogger.Log("#Config #LoadSettings failed", ex);
+            }
+
+            try
+            {
+                StackifyAPILogger.EvaluateLogEnabled();
+            }
+            catch (Exception ex)
+            {
+                StackifyAPILogger.Log("#Config #LoadSettings StackifyAPILogger.EvaluateLogEnabled failed", ex);
             }
         }
 
@@ -156,26 +200,20 @@ namespace StackifyLib
         public static List<string> ErrorCookiesBadKeys = new List<string>();
         public static List<string> ErrorSessionGoodKeys = new List<string>();
 
+        public static bool EnableCleanName { get; set; }
         public static bool CaptureSessionVariables { get; set; }
         public static bool CaptureServerVariables { get; set; }
         public static bool CaptureErrorPostdata { get; set; }
         public static bool CaptureErrorHeaders { get; set; } = true;
         public static bool CaptureErrorCookies { get; set; }
-
+        public static bool CaptureErrorUserName { get; set; } = true;
         public static string CaptureErrorSessionWhitelist { get; set; }
-
         public static string CaptureErrorHeadersWhitelist { get; set; }
-
         public static string CaptureErrorHeadersBlacklist { get; set; } = "cookie,authorization";
-
         public static string CaptureErrorCookiesWhitelist { get; set; }
-
         public static string CaptureErrorCookiesBlacklist { get; set; } = ".ASPXAUTH";
-
         public static int Ec2InstanceMetadataUpdateThresholdMinutes { get; set; } = 60;
-
         public static bool? IsEc2 { get; set; }
-
         public static bool? ApiLog { get; set; }
 
         public static int LoggingJsonMaxFields { get; set; } = 50;
@@ -185,6 +223,9 @@ namespace StackifyLib
         public static string RumScriptUrl { get; set; }
 
         public static string RumKey { get; set; }
+
+        public static string ProxyServer { get; set; }
+        public static bool?  ProxyUseDefaultCredentials { get; set; } = false;
 
 
         /// <summary>
@@ -197,6 +238,7 @@ namespace StackifyLib
         internal static string Get(string key, string defaultValue = null)
         {
             string v = null;
+            string section = null;
 
             try
             {
@@ -207,51 +249,69 @@ namespace StackifyLib
                     {
                         var appSettings = _configuration.GetSection("Stackify");
                         v = appSettings[key.Replace("Stackify.", string.Empty)];
+                        section = "ConfigStackify";
 
                         //Get settings from Stackify.json
-                        if (string.IsNullOrEmpty(v))
+                        if (string.IsNullOrWhiteSpace(v))
                         {
                             var key2 = key.Replace("Stackify.", string.Empty);
                             var stackifyJson = _configuration.GetSection(key2);
                             v = stackifyJson.Value;
-                            if (string.IsNullOrEmpty(v))
+                            section = "ConfigDirect";
+
+                            if (string.IsNullOrWhiteSpace(v))
                             {
                                 // Search in Retrace, but key will likely still be Stackify.name, not Retrace.name in the code
                                 var retraceAppSettings = _configuration.GetSection("Retrace");
                                 v = retraceAppSettings[key.Replace("Stackify.", string.Empty)];
+                                section = "ConfigRetrace";
                             }
                         }
                     }
 #endif
 
 #if NETFULL
-				    if (string.IsNullOrEmpty(v))
-				    {
-				        v = System.Configuration.ConfigurationManager.AppSettings[key];
-				    }
+                    if (string.IsNullOrWhiteSpace(v))
+                    {
+                        v = System.Configuration.ConfigurationManager.AppSettings[key];
+                        section = "AppSettings";
+                    }
 #endif
 
-                        if (string.IsNullOrEmpty(v))
-                        {
-                            v = System.Environment.GetEnvironmentVariable(key);
-                        }
+                    if (string.IsNullOrWhiteSpace(v))
+                    {
+                        v = System.Environment.GetEnvironmentVariable(key);
+                        section = "Env";
+                    }
 
-                        if (string.IsNullOrEmpty(v))
-                        {
-                            v = System.Environment.GetEnvironmentVariable(key.ToUpperInvariant());
-                        }
+                    if (string.IsNullOrWhiteSpace(v))
+                    {
+                        v = System.Environment.GetEnvironmentVariable(key.ToUpperInvariant());
+                        section = "EnvUpper";
+                    }
 
-                        if (string.IsNullOrEmpty(v))
-                        {
-                            // Linux systems do not allow period in an environment variable name
-                            v = System.Environment.GetEnvironmentVariable(key.Replace('.', '_').ToUpperInvariant());
-                        }
+                    if (string.IsNullOrWhiteSpace(v))
+                    {
+                        // Linux systems do not allow period in an environment variable name
+                        v = System.Environment.GetEnvironmentVariable(key.Replace('.', '_').ToUpperInvariant());
+                        section = "EnvUpperLinux";
+                    }
 
-                        if (string.IsNullOrEmpty(v) && key.StartsWith("Stackify."))
-                        {
-                            v = System.Environment.GetEnvironmentVariable("RETRACE_" + key.Substring(9).Replace('.', '_').ToUpperInvariant());
-                        }
+                    if (string.IsNullOrWhiteSpace(v) && key.StartsWith("Stackify."))
+                    {
+                        v = System.Environment.GetEnvironmentVariable("RETRACE_" + key.Substring(9).Replace('.', '_').ToUpperInvariant());
+                        section = "EnvUpperLinuxRetrace";
+                    }
+
+                    if (string.IsNullOrWhiteSpace(v) == false)
+                    {
+                        StackifyAPILogger.Log($"#Config - #Get - Section: {section} - Key: {key} - Value: {v ?? "Empty"}");
+                    }
                 }
+            }
+            catch (Exception ex)
+            {
+                StackifyAPILogger.Log("#Config - #Get - #Failed", ex);
             }
             finally
             {
@@ -274,13 +334,11 @@ namespace StackifyLib
                 string jsonPath = string.Empty;
                 string json = string.Empty;
 
-                ASPEnvironment = "Production";
-
-                if (!String.IsNullOrEmpty(ASPEnvironment))
+                if (!String.IsNullOrWhiteSpace(ASPEnvironment))
                 {
                     jsonPath = Path.Combine(baseDirectory, $"Stackify.{ASPEnvironment}.json");
                 }
-                else if (!String.IsNullOrEmpty(DotnetEnvironment))
+                else if (!String.IsNullOrWhiteSpace(DotnetEnvironment))
                 {
                     jsonPath = Path.Combine(baseDirectory, $"Stackify.{DotnetEnvironment}.json");
                 }
@@ -289,6 +347,7 @@ namespace StackifyLib
                     jsonPath = Path.Combine(baseDirectory, "Stackify.json");
                 }
 
+                StackifyAPILogger.Log($"#Config #Json Load - Path: {jsonPath}");
                 if (File.Exists(jsonPath))
                 {
                     using (var fs = new FileStream(jsonPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
@@ -308,11 +367,11 @@ namespace StackifyLib
                     string iisBaseDirectory = System.Web.Hosting.HostingEnvironment.ApplicationPhysicalPath;
                     string iisJsonPath = string.Empty;
 
-                    if (!String.IsNullOrEmpty(ASPEnvironment))
+                    if (!String.IsNullOrWhiteSpace(ASPEnvironment))
                     {
                         iisJsonPath = Path.Combine(iisBaseDirectory, $"Stackify.{ASPEnvironment}.json");
                     }
-                    else if (!String.IsNullOrEmpty(DotnetEnvironment))
+                    else if (!String.IsNullOrWhiteSpace(DotnetEnvironment))
                     {
                         iisJsonPath = Path.Combine(iisBaseDirectory, $"Stackify.{DotnetEnvironment}.json");
                     }
@@ -321,6 +380,7 @@ namespace StackifyLib
                         iisJsonPath = Path.Combine(iisBaseDirectory, "Stackify.json");
                     }
 
+                    StackifyAPILogger.Log($"#Config #Json Load - Path: {iisJsonPath}");
                     if (File.Exists(iisJsonPath))
                     {
                         using (var fs = new FileStream(iisJsonPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
@@ -398,6 +458,7 @@ namespace StackifyLib
             AppName = TryGetValue(obj, "AppName") ?? AppName;
             Environment = TryGetValue(obj, "Environment") ?? Environment;
             ApiKey = TryGetValue(obj, "ApiKey") ?? ApiKey;
+            StackifyAPILogger.Log($"#Config #Json #SetStackifyObj Load - AppName: {AppName} - Environment: {Environment} - ApiKey: {ApiKey}");
         }
 
         private static string TryGetValue(JToken jToken, string key)
@@ -420,6 +481,7 @@ namespace StackifyLib
                 }
 
                 r = val.ToString();
+                StackifyAPILogger.Log($"#Config #TryGetValue #Json Success - Key: {key} - Value: {r ?? "Empty"}");
             }
             catch (Exception ex)
             {
